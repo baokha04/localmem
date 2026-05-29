@@ -11,3 +11,7 @@ dist/
 scripts/bin/harness-cli
 
 *.env*
+
+# AGENT
+.agents/
+/.agents/

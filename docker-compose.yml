@@ -26,13 +26,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    ports:
+      - "3000:3000"
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/antigravity
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
-    # Keep container running and support interactive standard I/O (Stdio MCP Server)
-    stdin_open: true
-    tty: true
 
 volumes:
   pgdata:

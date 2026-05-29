@@ -36,5 +36,7 @@ COPY src/schema.sql ./dist/src/schema.sql
 ENV NODE_ENV=production
 ENV DATABASE_URL=postgres://postgres:postgres@db:5432/antigravity
 
+EXPOSE 3000
+
 # Set entry point
 CMD ["npm", "start"]

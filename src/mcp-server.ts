@@ -1,5 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import express from "express";
+import { randomUUID } from "node:crypto";
 import pg from 'pg';
 import { z } from "zod";
 import { ASTProcessor } from "./ast-processor.js";
@@ -12,16 +14,19 @@ dotenv.config();
 const { Client } = pg;
 
 // Configure PostgreSQL
+const dbUrl = process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/antigravity";
 const pgClient = new Client({
-  connectionString: process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/antigravity",
+  connectionString: dbUrl,
 });
 
 // Connect to database gracefully
 try {
   await pgClient.connect();
-  console.error("[PG] Connected successfully to PostgreSQL");
+  // NOTE: Stdio MCP servers must log all debug logs to console.error (stderr)
+  // to avoid corrupting the stdio protocol stream on stdout.
+  console.error(`[PG] Connected successfully to PostgreSQL at: ${dbUrl}`);
 } catch (err: any) {
-  console.error("[PG] Connection error (Note: pgvector tools will fail if PostgreSQL is not running):", err.message);
+  console.error(`[PG] Connection error for ${dbUrl} (Note: pgvector tools will fail if PostgreSQL is not running):`, err.message);
 }
 
 // Initialize Google Gen AI
@@ -68,13 +73,15 @@ async function generateEmbedding(text: string): Promise<number[]> {
 }
 
 // Tool 1: Analyze and Index Codebase
-server.tool(
+server.registerTool(
   "index_code_file",
-  "Analyzes AST and indexes code into Vector Database",
   {
-    filePath: z.string().describe("Path to the file to be indexed"),
-    sourceCode: z.string().describe("Raw source code content"),
-    project: z.string().describe("Project name context"),
+    description: "Analyzes AST and indexes code into Vector Database",
+    inputSchema: {
+      filePath: z.string().describe("Path to the file to be indexed"),
+      sourceCode: z.string().describe("Raw source code content"),
+      project: z.string().describe("Project name context"),
+    },
   },
   async ({ filePath, sourceCode, project }) => {
     // 1. Smart chunking based on AST
@@ -99,14 +106,16 @@ server.tool(
 );
 
 // Tool 2: Semantic Search with Metadata Filtering (Mem0-style)
-server.tool(
+server.registerTool(
   "semantic_code_search",
-  "Search code using Vector search combined with Metadata filters to save tokens",
   {
-    query: z.string().describe("Search query (e.g. 'OCR processing for Vietnamese')"),
-    project: z.string().optional().describe("Project name to narrow scope"),
-    nodeType: z.enum(['file', 'class', 'function']).optional().describe("Filter by specific type of AST node"),
-    limit: z.number().default(5).describe("Maximum number of results to return"),
+    description: "Search code using Vector search combined with Metadata filters to save tokens",
+    inputSchema: {
+      query: z.string().describe("Search query (e.g. 'OCR processing for Vietnamese')"),
+      project: z.string().optional().describe("Project name to narrow scope"),
+      nodeType: z.enum(['file', 'class', 'function']).optional().describe("Filter by specific type of AST node"),
+      limit: z.number().default(5).describe("Maximum number of results to return"),
+    },
   },
   async ({ query, project, nodeType, limit }) => {
     const queryEmbedding = await generateEmbedding(query);
@@ -154,6 +163,27 @@ server.tool(
   }
 );
 
-// Start the Stdio Server
-const transport = new StdioServerTransport();
-server.connect(transport).catch(console.error);
+// Create Express application
+const app = express();
+app.use(express.json());
+
+// Initialize the modern Streamable HTTP server transport (stateful)
+const transport = new StreamableHTTPServerTransport({
+  sessionIdGenerator: () => randomUUID(),
+});
+
+// Connect the MCP server to the Streamable HTTP transport
+await server.connect(transport);
+
+// Express handler: a single endpoint handles both GET (SSE stream establishment)
+// and POST (JSON-RPC client-to-server messages)
+app.all("/mcp", async (req, res) => {
+  await transport.handleRequest(req, res, req.body);
+});
+
+// Start listening on HTTP port
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.error(`\n🚀 [MCP Streamable HTTP Server] running on http://localhost:${port}`);
+  console.error(`🔌 Connection endpoint (GET / POST): http://localhost:${port}/mcp\n`);
+});
